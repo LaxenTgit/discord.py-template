@@ -1,3 +1,4 @@
+""" youre cool bc you lookig ts code """
 import discord
 from discord.ext import commands
 from datetime import timedelta
@@ -5,6 +6,7 @@ import os
 import re
 import json
 import time
+import yt_dlp
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -15,11 +17,24 @@ intents = discord.Intents.default()
 intents.guilds = True
 intents.members = True
 intents.message_content = True
+intents.voice_states = True
 
 bot = commands.Bot(command_prefix=PREFIX, intents=intents, help_command=None)
 
 ACCENT_COLOR = 0x8B5CF6
 DATA_FILE = "botdata.json"
+
+YDL_OPTS = {
+    "format": "bestaudio/best",
+    "noplaylist": True,
+    "quiet": True,
+    "default_search": "ytsearch",
+}
+
+FFMPEG_OPTS = {
+    "before_options": "-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5",
+    "options": "-vn",
+}
 
 
 def load_data() -> dict:
@@ -170,6 +185,14 @@ T = {
     "cat_ticket": {"tr": "🎫 Destek Talebi", "en": "🎫 Tickets"},
     "cat_roles": {"tr": "🎭 Rol Sistemi", "en": "🎭 Role System"},
     "cat_general": {"tr": "🔧 Genel", "en": "🔧 General"},
+    "cat_music": {"tr": "🎵 Müzik", "en": "🎵 Music"},
+
+    "music_not_in_voice": {"tr": "❌ Önce bir ses kanalına gir.", "en": "❌ Join a voice channel first."},
+    "music_joined": {"tr": "✅ Ses kanalına katıldım.", "en": "✅ Joined the voice channel."},
+    "music_playing": {"tr": "🎵 Çalıyor: **{title}**", "en": "🎵 Now playing: **{title}**"},
+    "music_error": {"tr": "❌ Bir şeyler ters gitti: {error}", "en": "❌ Something went wrong: {error}"},
+    "music_left": {"tr": "👋 Ses kanalından ayrıldım.", "en": "👋 Left the voice channel."},
+    "music_not_in_channel": {"tr": "❌ Zaten bir kanalda değilim.", "en": "❌ I'm not in a voice channel."},
 }
 
 
@@ -620,6 +643,7 @@ class HelpSelect(discord.ui.Select):
             discord.SelectOption(label=t(guild_id, "cat_verify"), value="verify", emoji="✅"),
             discord.SelectOption(label=t(guild_id, "cat_ticket"), value="ticket", emoji="🎫"),
             discord.SelectOption(label=t(guild_id, "cat_roles"), value="roles", emoji="🎭"),
+            discord.SelectOption(label=t(guild_id, "cat_music"), value="music", emoji="🎵"),
             discord.SelectOption(label=t(guild_id, "cat_general"), value="general", emoji="🔧"),
         ]
         super().__init__(placeholder=t(guild_id, "help_placeholder"), options=options, min_values=1, max_values=1)
@@ -660,6 +684,12 @@ class HelpSelect(discord.ui.Select):
                 f"`{PREFIX}rol-olustur <isim> [#renkkodu]`\n`{PREFIX}rolmenu @rol1 @rol2 ...`\n"
                 + ("↳ Kendi kendine rol seçim menüsü kurar." if lang_tr
                    else "↳ Sets up a self-assignable role menu.")
+            ),
+            "music": (
+                f"{t(gid, 'cat_music')}\n\n"
+                f"`{PREFIX}join`\n`{PREFIX}play <youtube linki>`\n`{PREFIX}leave`\n"
+                + ("↳ Ses kanalına katılır, şarkı çalar ve ayrılır." if lang_tr
+                   else "↳ Joins voice channel, plays music, and leaves.")
             ),
             "general": (
                 f"{t(gid, 'cat_general')}\n\n"
@@ -703,7 +733,7 @@ async def ping(ctx):
     await msg.edit(content=None, embed=embed)
 
 
-@bot.command(name="server")
+@bot.command(name="sunucu")
 async def server_info(ctx):
     guild = ctx.guild
     gid = guild.id
@@ -742,9 +772,54 @@ async def owner_info(ctx):
         color=ACCENT_COLOR
     )
     embed.set_thumbnail(url=bot.user.display_avatar.url)
-    embed.add_field(name="Want this bot for free?", value="[Click here](https://discord.com/users/1487413399653716048)", inline=False)
+    embed.add_field(name="Want this bot for free?", value="[Click here](https://github.com/LaxenTgit/discord-bot-template)", inline=False)
     embed.set_footer(text=f"{bot.user.name} • hi lol")
     await ctx.send(embed=embed)
+
+
+@bot.command()
+async def join(ctx):
+    if ctx.author.voice is None:
+        return await ctx.send(t(ctx.guild.id, "music_not_in_voice"))
+    channel = ctx.author.voice.channel
+    if ctx.voice_client is None:
+        await channel.connect()
+    else:
+        await ctx.voice_client.move_to(channel)
+    await ctx.send(t(ctx.guild.id, "music_joined"))
+
+
+@bot.command()
+async def play(ctx, *, query):
+    if ctx.voice_client is None:
+        if ctx.author.voice is None:
+            return await ctx.send(t(ctx.guild.id, "music_not_in_voice"))
+        await ctx.author.voice.channel.connect()
+
+    try:
+        with yt_dlp.YoutubeDL(YDL_OPTS) as ydl:
+            info = ydl.extract_info(f"ytsearch:{query}", download=False)
+            entries = info.get("entries")
+            track = entries[0] if entries else info
+
+        url = track["url"]
+        title = track.get("title", "bilinmeyen")
+    except Exception as e:
+        return await ctx.send(t(ctx.guild.id, "music_error", error=str(e)))
+
+    source = discord.FFmpegPCMAudio(url, **FFMPEG_OPTS)
+    ctx.voice_client.stop()
+    ctx.voice_client.play(source)
+    await ctx.send(t(ctx.guild.id, "music_playing", title=title))
+
+
+@bot.command()
+async def leave(ctx):
+    if ctx.voice_client:
+        await ctx.voice_client.disconnect()
+        await ctx.send(t(ctx.guild.id, "music_left"))
+    else:
+        await ctx.send(t(ctx.guild.id, "music_not_in_channel"))
 
 
 bot.run(TOKEN)
